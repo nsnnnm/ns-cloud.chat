@@ -6,15 +6,99 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
 <style>
-body { margin:0; background:#0f0f0f; color:#fff; font-family:sans-serif; display:flex; flex-direction:column; height:100vh;}
-#top { display:flex; justify-content:space-between; padding:10px; background:#181818;}
-#chat { flex:1; overflow:auto; padding:10px;}
-.msg { margin:8px 0;}
-.name { color:#4fc3f7;}
-img { max-width:200px; border-radius:8px;}
-#bottom { display:flex; gap:5px; padding:10px; background:#181818;}
-input { flex:1; padding:10px; background:#222; border:none; color:white;}
-button { padding:10px; background:#333; color:white; border:none;}
+body {
+  margin:0;
+  background:#0f0f0f;
+  color:#fff;
+  font-family:sans-serif;
+  display:flex;
+  flex-direction:column;
+  height:100vh;
+}
+
+#top {
+  display:flex;
+  justify-content:space-between;
+  padding:10px;
+  background:#181818;
+}
+
+#chat {
+  flex:1;
+  overflow:auto;
+  padding:10px;
+}
+
+.msg { margin:8px 0; }
+.name { color:#4fc3f7; }
+
+img {
+  max-width:200px;
+  border-radius:8px;
+}
+
+#bottom {
+  display:flex;
+  gap:5px;
+  padding:10px;
+  background:#181818;
+}
+
+input {
+  flex:1;
+  padding:10px;
+  background:#222;
+  border:none;
+  color:white;
+}
+
+button {
+  padding:10px;
+  background:#333;
+  color:white;
+  border:none;
+}
+
+/* ===== 通話UI ===== */
+#callUI {
+  position:fixed;
+  top:0;
+  left:0;
+  width:100%;
+  height:100%;
+  background:rgba(0,0,0,0.8);
+  display:none;
+  justify-content:center;
+  align-items:center;
+  z-index:9999;
+}
+
+#callBox {
+  background:#1e1e1e;
+  padding:20px;
+  border-radius:16px;
+  text-align:center;
+  width:260px;
+}
+
+#callStatus {
+  font-size:18px;
+  margin-bottom:10px;
+}
+
+#callControls {
+  margin-top:20px;
+  display:flex;
+  justify-content:center;
+  gap:10px;
+}
+
+#callControls button {
+  border-radius:50%;
+  font-size:18px;
+  width:50px;
+  height:50px;
+}
 </style>
 </head>
 
@@ -37,6 +121,18 @@ button { padding:10px; background:#333; color:white; border:none;}
   <input type="file" id="file">
 </div>
 
+<!-- 通話UI -->
+<div id="callUI">
+  <div id="callBox">
+    <div id="callStatus">📞 接続中...</div>
+
+    <div id="callControls">
+      <button onclick="toggleMute()">🎤</button>
+      <button onclick="endCall()">❌</button>
+    </div>
+  </div>
+</div>
+
 <audio id="remoteAudio" autoplay></audio>
 
 <script>
@@ -53,16 +149,36 @@ const room = location.pathname;
 const ws = new WebSocket(`${WORKER}?room=${room}`);
 const chat = document.getElementById("chat");
 
-// ===== 通知許可 =====
+// ===== 通知 =====
 if (Notification.permission !== "granted") {
   Notification.requestPermission();
 }
 
 // ===== WebRTC =====
-let pc = new RTCPeerConnection();
+let pc;
 let localStream;
+let muted = false;
 
+function createPeer(){
+  pc = new RTCPeerConnection();
+
+  pc.ontrack = e => {
+    remoteAudio.srcObject = e.streams[0];
+  };
+
+  pc.onicecandidate = e => {
+    if (e.candidate) {
+      ws.send(JSON.stringify({type:"ice", candidate:e.candidate}));
+    }
+  };
+}
+
+// ===== 通話開始 =====
 async function startCall() {
+  createPeer();
+
+  showCallUI("📞 接続中...");
+
   localStream = await navigator.mediaDevices.getUserMedia({audio:true});
   localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
 
@@ -72,15 +188,24 @@ async function startCall() {
   ws.send(JSON.stringify({type:"offer", offer}));
 }
 
-pc.ontrack = e => {
-  remoteAudio.srcObject = e.streams[0];
-};
+// ===== 通話UI =====
+function showCallUI(text){
+  callUI.style.display = "flex";
+  callStatus.textContent = text;
+}
 
-pc.onicecandidate = e => {
-  if (e.candidate) {
-    ws.send(JSON.stringify({type:"ice", candidate:e.candidate}));
-  }
-};
+// ===== ミュート =====
+function toggleMute(){
+  muted = !muted;
+  localStream.getAudioTracks().forEach(t => t.enabled = !muted);
+  callStatus.textContent = muted ? "🔇 ミュート中" : "📞 通話中";
+}
+
+// ===== 終了 =====
+function endCall(){
+  if (pc) pc.close();
+  callUI.style.display = "none";
+}
 
 // ===== 受信 =====
 ws.onmessage = async (e) => {
@@ -108,6 +233,10 @@ ws.onmessage = async (e) => {
 
   // ===== 通話 =====
   if (data.type === "offer") {
+    createPeer();
+
+    showCallUI("📞 着信中...");
+
     localStream = await navigator.mediaDevices.getUserMedia({audio:true});
     localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
 
@@ -116,10 +245,13 @@ ws.onmessage = async (e) => {
     await pc.setLocalDescription(answer);
 
     ws.send(JSON.stringify({type:"answer", answer}));
+
+    callStatus.textContent = "📞 通話中";
   }
 
   if (data.type === "answer") {
     await pc.setRemoteDescription(data.answer);
+    callStatus.textContent = "📞 接続完了";
   }
 
   if (data.type === "ice") {
