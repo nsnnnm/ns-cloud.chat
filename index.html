@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<title>Cloud Chat+</title>
+<title>Free Chat</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
 <style>
@@ -17,10 +17,11 @@ body {
 }
 
 #top {
-  padding:10px;
-  background:#181818;
   display:flex;
   justify-content:space-between;
+  align-items:center;
+  padding:10px;
+  background:#181818;
   border-bottom:1px solid #333;
 }
 
@@ -41,6 +42,7 @@ img {
 
 #bottom {
   display:flex;
+  gap:5px;
   padding:10px;
   background:#181818;
   border-top:1px solid #333;
@@ -56,20 +58,28 @@ input {
 }
 
 button {
-  margin-left:6px;
   padding:10px;
   background:#4fc3f7;
   border:none;
   border-radius:6px;
   cursor:pointer;
 }
+
+#plus {
+  position:fixed;
+  top:10px;
+  left:10px;
+  background:#ff9800;
+}
 </style>
 </head>
 
 <body>
 
+<button id="plus">＋</button>
+
 <div id="top">
-  <div id="username">未設定</div>
+  <div id="username"></div>
   <div>👥 <span id="count">0</span></div>
 </div>
 
@@ -84,53 +94,70 @@ button {
 <script>
 const WORKER_URL = "wss://ns-cloud-chat-worler.nekosuke-1012.workers.dev";
 
-const chat = document.getElementById("chat");
-const countEl = document.getElementById("count");
-const input = document.getElementById("msg");
-const fileInput = document.getElementById("file");
-const usernameEl = document.getElementById("username");
-
-// ===== 名前管理 =====
+// ===== 名前 =====
 let name = localStorage.getItem("name");
-
 if (!name) {
-  name = prompt("名前を入力してください");
+  name = prompt("名前を入力");
   if (!name) name = "名無し";
   localStorage.setItem("name", name);
 }
-
-usernameEl.textContent = name;
+document.getElementById("username").textContent = name;
 
 // 名前変更
-usernameEl.onclick = () => {
-  const newName = prompt("名前変更", name);
-  if (newName) {
-    name = newName;
+document.getElementById("username").onclick = () => {
+  const n = prompt("名前変更", name);
+  if (n) {
+    name = n;
     localStorage.setItem("name", name);
-    usernameEl.textContent = name;
+    document.getElementById("username").textContent = name;
   }
 };
 
-// ===== 部屋 =====
+// ===== 通知 =====
+if (Notification.permission !== "granted") {
+  Notification.requestPermission();
+}
+
+function notify(title, body){
+  if (Notification.permission === "granted") {
+    new Notification(title, { body });
+  }
+}
+
+// ===== ルーム =====
 const room = location.pathname;
 
 // ===== WebSocket =====
 const ws = new WebSocket(`${WORKER_URL}?room=${room}`);
 
-// ===== 履歴読み込み =====
-const history = JSON.parse(localStorage.getItem("chatHistory") || "[]");
-history.forEach(addMessageToUI);
+const chat = document.getElementById("chat");
+const input = document.getElementById("msg");
+const countEl = document.getElementById("count");
 
 // ===== 受信 =====
 ws.onmessage = (e) => {
   const data = JSON.parse(e.data);
 
-  if (data.type === "msg") {
+  if (data.type === "history") {
+    chat.innerHTML = "";
+    data.messages.forEach(addMessageToUI);
+    return;
+  }
+
+  if (data.type === "msg" || data.type === "img") {
     addMessage(data);
+
+    if (data.name !== name) {
+      notify(data.name, data.text || "画像が送信されました");
+    }
   }
 
   if (data.type === "count") {
     countEl.textContent = data.count;
+  }
+
+  if (data.type === "read") {
+    showRead(data);
   }
 };
 
@@ -139,43 +166,59 @@ function send(){
   const text = input.value.trim();
   if (!text) return;
 
-  const data = {
+  ws.send(JSON.stringify({
     type:"msg",
     name:name,
     text:text
-  };
+  }));
 
-  ws.send(JSON.stringify(data));
   input.value = "";
 }
 
-// ===== 画像送信 =====
-fileInput.onchange = () => {
-  const file = fileInput.files[0];
+// Enter送信
+input.addEventListener("keydown", e=>{
+  if(e.key==="Enter") send();
+});
+
+// ===== 画像送信（catbox） =====
+document.getElementById("file").onchange = async () => {
+  const file = document.getElementById("file").files[0];
   if (!file) return;
 
-  const reader = new FileReader();
-  reader.onload = () => {
+  const formData = new FormData();
+  formData.append("reqtype", "fileupload");
+  formData.append("fileToUpload", file);
+
+  try {
+    const res = await fetch("https://catbox.moe/user/api.php", {
+      method: "POST",
+      body: formData
+    });
+
+    const url = await res.text();
+
     ws.send(JSON.stringify({
       type:"img",
       name:name,
-      img:reader.result
+      img:url.trim()
     }));
-  };
-  reader.readAsDataURL(file);
+
+  } catch {
+    alert("アップロード失敗");
+  }
 };
 
-// ===== メッセージ追加 =====
+// ===== 表示 =====
 function addMessage(data){
   addMessageToUI(data);
 
-  // 保存
-  history.push(data);
-  if (history.length > 100) history.shift();
-  localStorage.setItem("chatHistory", JSON.stringify(history));
+  // 既読送信
+  ws.send(JSON.stringify({
+    type:"read",
+    name:name
+  }));
 }
 
-// ===== UI描画 =====
 function addMessageToUI(data){
   let html = `<div class="msg"><span class="name">${escape(data.name)}</span>: `;
 
@@ -187,11 +230,26 @@ function addMessageToUI(data){
     html += `<br><img src="${data.img}">`;
   }
 
-  html += `</div>`;
+  html += "</div>";
 
   chat.innerHTML += html;
   chat.scrollTop = chat.scrollHeight;
 }
+
+// ===== 既読表示 =====
+function showRead(data){
+  const el = document.createElement("div");
+  el.style.fontSize="10px";
+  el.style.color="#aaa";
+  el.textContent = `${data.name}が既読`;
+  chat.appendChild(el);
+}
+
+// ===== ルーム作成 =====
+document.getElementById("plus").onclick = () => {
+  const id = Math.random().toString(36).slice(2,10);
+  location.href = "/" + id;
+};
 
 // ===== エスケープ =====
 function escape(str){
@@ -203,11 +261,6 @@ function escape(str){
     "'":"&#39;"
   }[s]));
 }
-
-// ===== Enter送信 =====
-input.addEventListener("keydown", e=>{
-  if(e.key==="Enter") send();
-});
 </script>
 
 </body>
