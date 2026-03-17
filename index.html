@@ -2,212 +2,183 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<title>Cloud Chat+</title>
+<title>Chat</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
 <style>
-body {
-  margin:0;
-  background:#0f0f0f;
-  color:#fff;
-  font-family:sans-serif;
-  display:flex;
-  flex-direction:column;
-  height:100vh;
-}
-
-#top {
-  padding:10px;
-  background:#181818;
-  display:flex;
-  justify-content:space-between;
-  border-bottom:1px solid #333;
-}
-
-#chat {
-  flex:1;
-  overflow:auto;
-  padding:10px;
-}
-
-.msg { margin:8px 0; }
-.name { color:#4fc3f7; font-weight:bold; }
-
-img {
-  max-width:200px;
-  border-radius:8px;
-  margin-top:5px;
-}
-
-#bottom {
-  display:flex;
-  padding:10px;
-  background:#181818;
-  border-top:1px solid #333;
-}
-
-input {
-  flex:1;
-  padding:10px;
-  background:#222;
-  border:none;
-  color:white;
-  border-radius:6px;
-}
-
-button {
-  margin-left:6px;
-  padding:10px;
-  background:#4fc3f7;
-  border:none;
-  border-radius:6px;
-  cursor:pointer;
-}
+body { margin:0; background:#0f0f0f; color:#fff; font-family:sans-serif; display:flex; flex-direction:column; height:100vh;}
+#top { display:flex; justify-content:space-between; padding:10px; background:#181818;}
+#chat { flex:1; overflow:auto; padding:10px;}
+.msg { margin:8px 0;}
+.name { color:#4fc3f7;}
+img { max-width:200px; border-radius:8px;}
+#bottom { display:flex; gap:5px; padding:10px; background:#181818;}
+input { flex:1; padding:10px; background:#222; border:none; color:white;}
+button { padding:10px; background:#333; color:white; border:none;}
 </style>
 </head>
 
 <body>
 
 <div id="top">
-  <div id="username">未設定</div>
-  <div>👥 <span id="count">0</span></div>
+  <div id="username"></div>
+  <div>
+    👥 <span id="count">0</span>
+    <button onclick="newRoom()">＋</button>
+    <button onclick="startCall()">📞</button>
+  </div>
 </div>
 
 <div id="chat"></div>
 
 <div id="bottom">
-  <input id="msg" placeholder="メッセージ...">
+  <input id="msg">
   <button onclick="send()">送信</button>
-  <input type="file" id="file" accept="image/*">
+  <input type="file" id="file">
 </div>
 
+<audio id="remoteAudio" autoplay></audio>
+
 <script>
-const WORKER_URL = "wss://ns-cloud-chat-worler.nekosuke-1012.workers.dev";
+const WORKER = "wss://ns-cloud-chat-worler.nekosuke-1012.workers.dev";
 
-const chat = document.getElementById("chat");
-const countEl = document.getElementById("count");
-const input = document.getElementById("msg");
-const fileInput = document.getElementById("file");
-const usernameEl = document.getElementById("username");
-
-// ===== 名前管理 =====
 let name = localStorage.getItem("name");
-
 if (!name) {
-  name = prompt("名前を入力してください");
-  if (!name) name = "名無し";
+  name = prompt("名前") || "名無し";
   localStorage.setItem("name", name);
 }
+username.textContent = name;
 
-usernameEl.textContent = name;
+const room = location.pathname;
+const ws = new WebSocket(`${WORKER}?room=${room}`);
+const chat = document.getElementById("chat");
 
-// 名前変更
-usernameEl.onclick = () => {
-  const newName = prompt("名前変更", name);
-  if (newName) {
-    name = newName;
-    localStorage.setItem("name", name);
-    usernameEl.textContent = name;
+// ===== 通知許可 =====
+if (Notification.permission !== "granted") {
+  Notification.requestPermission();
+}
+
+// ===== WebRTC =====
+let pc = new RTCPeerConnection();
+let localStream;
+
+async function startCall() {
+  localStream = await navigator.mediaDevices.getUserMedia({audio:true});
+  localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  ws.send(JSON.stringify({type:"offer", offer}));
+}
+
+pc.ontrack = e => {
+  remoteAudio.srcObject = e.streams[0];
+};
+
+pc.onicecandidate = e => {
+  if (e.candidate) {
+    ws.send(JSON.stringify({type:"ice", candidate:e.candidate}));
   }
 };
 
-// ===== 部屋 =====
-const room = location.pathname;
-
-// ===== WebSocket =====
-const ws = new WebSocket(`${WORKER_URL}?room=${room}`);
-
-// ===== 履歴読み込み =====
-const history = JSON.parse(localStorage.getItem("chatHistory") || "[]");
-history.forEach(addMessageToUI);
-
 // ===== 受信 =====
-ws.onmessage = (e) => {
+ws.onmessage = async (e) => {
   const data = JSON.parse(e.data);
 
-  if (data.type === "msg") {
+  if (data.type === "history") {
+    chat.innerHTML = "";
+    data.messages.forEach(addMessage);
+    return;
+  }
+
+  if (data.type === "msg" || data.type === "img") {
     addMessage(data);
+
+    if (document.hidden && Notification.permission === "granted") {
+      new Notification(data.name + ": " + (data.text || "画像"));
+    }
+
+    ws.send(JSON.stringify({type:"read"}));
   }
 
   if (data.type === "count") {
-    countEl.textContent = data.count;
+    count.textContent = data.count;
+  }
+
+  // ===== 通話 =====
+  if (data.type === "offer") {
+    localStream = await navigator.mediaDevices.getUserMedia({audio:true});
+    localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+    await pc.setRemoteDescription(data.offer);
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+
+    ws.send(JSON.stringify({type:"answer", answer}));
+  }
+
+  if (data.type === "answer") {
+    await pc.setRemoteDescription(data.answer);
+  }
+
+  if (data.type === "ice") {
+    try { await pc.addIceCandidate(data.candidate); } catch {}
   }
 };
 
 // ===== 送信 =====
 function send(){
-  const text = input.value.trim();
-  if (!text) return;
+  const text = msg.value;
 
-  const data = {
+  ws.send(JSON.stringify({
     type:"msg",
     name:name,
     text:text
-  };
+  }));
 
-  ws.send(JSON.stringify(data));
-  input.value = "";
+  msg.value = "";
 }
 
-// ===== 画像送信 =====
-fileInput.onchange = () => {
-  const file = fileInput.files[0];
-  if (!file) return;
+// ===== 画像 =====
+file.onchange = async () => {
+  const f = file.files[0];
 
-  const reader = new FileReader();
-  reader.onload = () => {
-    ws.send(JSON.stringify({
-      type:"img",
-      name:name,
-      img:reader.result
-    }));
-  };
-  reader.readAsDataURL(file);
+  const form = new FormData();
+  form.append("reqtype","fileupload");
+  form.append("fileToUpload", f);
+
+  const res = await fetch("https://catbox.moe/user/api.php", {
+    method:"POST",
+    body:form
+  });
+
+  const url = await res.text();
+
+  ws.send(JSON.stringify({
+    type:"img",
+    name:name,
+    img:url.trim()
+  }));
 };
 
-// ===== メッセージ追加 =====
-function addMessage(data){
-  addMessageToUI(data);
+// ===== 表示 =====
+function addMessage(d){
+  let html = `<div class="msg"><span class="name">${d.name}</span>:`;
 
-  // 保存
-  history.push(data);
-  if (history.length > 100) history.shift();
-  localStorage.setItem("chatHistory", JSON.stringify(history));
-}
+  if (d.type === "msg") html += d.text;
+  if (d.type === "img") html += `<br><img src="${d.img}">`;
 
-// ===== UI描画 =====
-function addMessageToUI(data){
-  let html = `<div class="msg"><span class="name">${escape(data.name)}</span>: `;
-
-  if (data.type === "msg") {
-    html += escape(data.text);
-  }
-
-  if (data.type === "img") {
-    html += `<br><img src="${data.img}">`;
-  }
-
-  html += `</div>`;
+  html += "</div>";
 
   chat.innerHTML += html;
-  chat.scrollTop = chat.scrollHeight;
 }
 
-// ===== エスケープ =====
-function escape(str){
-  return str.replace(/[&<>"']/g, s => ({
-    "&":"&amp;",
-    "<":"&lt;",
-    ">":"&gt;",
-    '"':"&quot;",
-    "'":"&#39;"
-  }[s]));
+// ===== ルーム作成 =====
+function newRoom(){
+  const id = prompt("ルーム名");
+  if (id) location.href = "/" + id;
 }
-
-// ===== Enter送信 =====
-input.addEventListener("keydown", e=>{
-  if(e.key==="Enter") send();
-});
 </script>
 
 </body>
