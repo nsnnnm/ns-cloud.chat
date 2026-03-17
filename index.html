@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Cloud Chat</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<style>
+body {
+  margin:0;
+  background:#0f0f0f;
+  color:#fff;
+  font-family:sans-serif;
+  display:flex;
+  flex-direction:column;
+  height:100vh;
+}
+
+#top {
+  padding:10px;
+  background:#181818;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  border-bottom:1px solid #333;
+}
+
+#chat {
+  flex:1;
+  overflow:auto;
+  padding:10px;
+}
+
+.msg {
+  margin:6px 0;
+}
+
+.name {
+  color:#4fc3f7;
+  font-weight:bold;
+}
+
+#bottom {
+  display:flex;
+  padding:10px;
+  background:#181818;
+  border-top:1px solid #333;
+}
+
+input {
+  flex:1;
+  padding:10px;
+  background:#222;
+  border:none;
+  color:white;
+  border-radius:6px;
+}
+
+button {
+  margin-left:8px;
+  padding:10px 15px;
+  background:#4fc3f7;
+  border:none;
+  border-radius:6px;
+  cursor:pointer;
+}
+</style>
+</head>
+
+<body>
+
+<div id="top">
+  <div>💬 Cloud Chat</div>
+  <div>👥 <span id="count">0</span></div>
+</div>
+
+<div id="chat"></div>
+
+<div id="bottom">
+  <input id="msg" placeholder="メッセージ入力...">
+  <button onclick="send()">送信</button>
+</div>
+
+<script>
+// ===== 設定 =====
+const WORKER_URL = "wss://ns-cloud-chat-worler.nekosuke-1012.workers.dev";
+
+// ===== 要素 =====
+const chat = document.getElementById("chat");
+const countEl = document.getElementById("count");
+const input = document.getElementById("msg");
+
+// ===== 名前 =====
+let name = localStorage.getItem("name");
+if (!name) {
+  name = "user" + Math.floor(Math.random()*1000);
+  localStorage.setItem("name", name);
+}
+
+// ===== 部屋（URLごと） =====
+const room = location.pathname;
+
+// ===== WebSocket =====
+const ws = new WebSocket(`${WORKER_URL}?room=${room}`);
+
+// ===== 接続 =====
+ws.onopen = () => {
+  addSystem("接続しました");
+};
+
+ws.onclose = () => {
+  addSystem("切断されました（再読み込みしてね）");
+};
+
+ws.onerror = () => {
+  addSystem("接続エラー");
+};
+
+// ===== 受信 =====
+ws.onmessage = (e) => {
+  const data = JSON.parse(e.data);
+
+  if (data.type === "msg") {
+    addMsg(data.name, data.text);
+  }
+
+  if (data.type === "count") {
+    countEl.textContent = data.count;
+  }
+};
+
+// ===== 送信 =====
+function send(){
+  const text = input.value.trim();
+  if (!text) return;
+
+  ws.send(JSON.stringify({
+    type:"msg",
+    name:name,
+    text:text
+  }));
+
+  input.value = "";
+}
+
+// ===== 表示 =====
+function addMsg(user, text){
+  chat.innerHTML += `
+    <div class="msg">
+      <span class="name">${escape(user)}</span>: ${escape(text)}
+    </div>
+  `;
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function addSystem(text){
+  chat.innerHTML += `<div style="color:#888">${text}</div>`;
+}
+
+// ===== エスケープ =====
+function escape(str){
+  return str.replace(/[&<>"']/g, s => ({
+    "&":"&amp;",
+    "<":"&lt;",
+    ">":"&gt;",
+    '"':"&quot;",
+    "'":"&#39;"
+  }[s]));
+}
+
+// ===== Enter送信 =====
+input.addEventListener("keydown", e=>{
+  if(e.key==="Enter") send();
+});
+
+// ===== 名前変更（ダブルクリック） =====
+document.getElementById("top").ondblclick = () => {
+  const newName = prompt("名前変更", name);
+  if (newName) {
+    name = newName;
+    localStorage.setItem("name", name);
+  }
+};
+</script>
+
+</body>
+</html>
